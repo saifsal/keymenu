@@ -44,12 +44,14 @@ Options:
 Flow:
 
 1. Prompt for master password via dmenu (`-P` when the installed dmenu supports it); optional keyfile via `--keyfile`.
-2. Show entry list with `+ Add entry` plus flat titles; select one.
+2. Show entry list with `+ Add entry` plus **group-aware** paths (`Work/VPN`); select one.
 3. **Add** → prompt title / username / password, then save.
-4. For an entry, **always** show an action menu: `Password` | `Username` | `Autotype` | `Edit` | `Delete`.
-5. Password/Username → own X11 `CLIPBOARD` as UTF8_STRING, clear after TTL (default 45s).
+4. For an entry, **always** show an action menu:
+   `Password` | `Username` | `Autotype` | `OTP` (if present) | custom fields | `Attachments…` (if any) | `Edit` | `Delete`.
+5. Password/Username/OTP/custom field → own X11 `CLIPBOARD` as UTF8_STRING, clear after TTL (default 45s).
 6. Autotype → type username, Tab, password into the focused window (ASCII printable).
-7. Edit / Delete → dmenu prompts (Delete asks Yes/No), then atomic save.
+7. Attachments → pick a file in dmenu, then a save path (still dmenu-only).
+8. Edit / Delete → dmenu prompts (Delete asks Yes/No), then atomic save.
 
 Process exits after one action (clipboard clear may keep it alive until TTL).
 
