@@ -1,12 +1,14 @@
 //! Flatten database entries for dmenu listing (group-aware paths).
 
+use std::collections::HashMap;
+
 use keepass::db::{EntryId, EntryRef, GroupId};
 use keepass::Database;
 
 /// A selectable entry row for dmenu.
 #[derive(Debug, Clone)]
 pub struct EntryItem {
-    /// Display label, e.g. `Work/VPN` or `Example Site`.
+    /// Display label, e.g. `Work/VPN` or `Gmail (alice@work)`.
     pub label: String,
     pub id: EntryId,
 }
@@ -14,7 +16,13 @@ pub struct EntryItem {
 /// Strip newlines/control chars that would break the dmenu line protocol.
 pub fn sanitize_label(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_control() || c == '\n' || c == '\r' { ' ' } else { c })
+        .map(|c| {
+            if c.is_control() || c == '\n' || c == '\r' {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -23,15 +31,39 @@ pub fn sanitize_label(s: &str) -> String {
 
 /// Group-aware list of all entries as `Group/…/Title` paths.
 /// Skips entries inside the recycle bin when one is configured.
+/// When multiple entries share the same path label, append `(username)`.
 pub fn flat_entries(db: &Database) -> Vec<EntryItem> {
     let bin_id = db.recycle_bin().map(|g| g.id());
 
-    let mut items: Vec<EntryItem> = db
+    let mut raw: Vec<(EntryId, String, String)> = db
         .iter_all_entries()
         .filter(|e| !in_recycle_bin(db, e, bin_id))
-        .map(|e| EntryItem {
-            label: sanitize_label(&entry_path_label(&e)),
-            id: e.id(),
+        .map(|e| {
+            let path = sanitize_label(&entry_path_label(&e));
+            let user = e.get_username().unwrap_or("").to_string();
+            (e.id(), path, user)
+        })
+        .collect();
+
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for (_, path, _) in &raw {
+        *counts.entry(path.clone()).or_insert(0) += 1;
+    }
+
+    let mut items: Vec<EntryItem> = raw
+        .drain(..)
+        .map(|(id, path, user)| {
+            let label = if counts.get(&path).copied().unwrap_or(0) > 1 {
+                let u = sanitize_label(&user);
+                if u.is_empty() {
+                    format!("{path} (no user)")
+                } else {
+                    format!("{path} ({u})")
+                }
+            } else {
+                path
+            };
+            EntryItem { label, id }
         })
         .collect();
 
@@ -101,6 +133,8 @@ mod tests {
     use super::*;
     use crate::secret::SecretString;
     use crate::unlock::unlock_with_password;
+    use keepass::db::fields;
+    use keepass::Database;
     use std::path::PathBuf;
 
     fn fixture() -> PathBuf {
@@ -121,5 +155,25 @@ mod tests {
     #[test]
     fn sanitize_strips_newlines() {
         assert_eq!(sanitize_label("a\nb\rc"), "a b c");
+    }
+
+    #[test]
+    fn duplicate_titles_show_username() {
+        let mut db = Database::new();
+        {
+            let mut root = db.root_mut();
+            root.add_entry().edit(|e| {
+                e.set_unprotected(fields::TITLE, "Gmail");
+                e.set_unprotected(fields::USERNAME, "alice@work");
+            });
+            root.add_entry().edit(|e| {
+                e.set_unprotected(fields::TITLE, "Gmail");
+                e.set_unprotected(fields::USERNAME, "bob@home");
+            });
+        }
+        let items = flat_entries(&db);
+        let labels: Vec<_> = items.iter().map(|i| i.label.clone()).collect();
+        assert!(labels.iter().any(|l| l == "Gmail (alice@work)"));
+        assert!(labels.iter().any(|l| l == "Gmail (bob@home)"));
     }
 }
