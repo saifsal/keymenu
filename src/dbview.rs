@@ -1,6 +1,6 @@
 //! Flatten database entries for dmenu listing (group-aware paths).
 
-use keepass::db::{EntryId, EntryRef};
+use keepass::db::{EntryId, EntryRef, GroupId};
 use keepass::Database;
 
 /// A selectable entry row for dmenu.
@@ -11,28 +11,46 @@ pub struct EntryItem {
     pub id: EntryId,
 }
 
-/// Group-aware list of all entries as `Group/…/Title` paths (root group name omitted when empty/"Root").
+/// Strip newlines/control chars that would break the dmenu line protocol.
+pub fn sanitize_label(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() || c == '\n' || c == '\r' { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Group-aware list of all entries as `Group/…/Title` paths.
+/// Skips entries inside the recycle bin when one is configured.
 pub fn flat_entries(db: &Database) -> Vec<EntryItem> {
+    let bin_id = db.recycle_bin().map(|g| g.id());
+
     let mut items: Vec<EntryItem> = db
         .iter_all_entries()
+        .filter(|e| !in_recycle_bin(db, e, bin_id))
         .map(|e| EntryItem {
-            label: entry_path_label(&e),
+            label: sanitize_label(&entry_path_label(&e)),
             id: e.id(),
         })
         .collect();
 
-    // Disambiguate duplicate labels so dmenu selection is unique.
-    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for item in &mut items {
-        let count = seen.entry(item.label.clone()).or_insert(0);
-        if *count > 0 {
-            item.label = format!("{} ({})", item.label, count);
-        }
-        *count += 1;
-    }
-
     items.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
     items
+}
+
+fn in_recycle_bin(db: &Database, entry: &EntryRef<'_>, bin_id: Option<GroupId>) -> bool {
+    let Some(bin) = bin_id else {
+        return false;
+    };
+    let mut current = Some(entry.parent().id());
+    while let Some(id) = current {
+        if id == bin {
+            return true;
+        }
+        current = db.group(id).and_then(|g| g.parent().map(|p| p.id()));
+    }
+    false
 }
 
 /// Build `Group/Sub/Title` for an entry; skip a nameless or generic root.
@@ -49,7 +67,6 @@ fn entry_path_label(entry: &EntryRef<'_>) -> String {
         let name = g.name.clone();
         let parent_id = g.parent().map(|p| p.id());
         if parent_id.is_none() {
-            // Database root: include name only if meaningful and not the common "Root".
             let n = name.trim();
             if !n.is_empty() && !n.eq_ignore_ascii_case("root") {
                 parts.push(n.to_string());
@@ -79,11 +96,6 @@ pub fn labels(items: &[EntryItem]) -> Vec<String> {
     items.iter().map(|i| i.label.clone()).collect()
 }
 
-/// Find an item by exact dmenu selection string.
-pub fn find_by_label<'a>(items: &'a [EntryItem], label: &str) -> Option<&'a EntryItem> {
-    items.iter().find(|i| i.label == label)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +116,10 @@ mod tests {
         assert!(labels.contains(&"Example Site"));
         assert!(labels.contains(&"Email"));
         assert!(labels.contains(&"Work/VPN"));
+    }
+
+    #[test]
+    fn sanitize_strips_newlines() {
+        assert_eq!(sanitize_label("a\nb\rc"), "a b c");
     }
 }

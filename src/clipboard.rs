@@ -48,7 +48,9 @@ unsafe fn copy_with_ttl_inner(bytes: &[u8], ttl: Duration) -> Result<(), String>
     }
 
     let mut payload = bytes.to_vec();
-    let deadline = Instant::now() + ttl;
+    let deadline = Instant::now()
+        .checked_add(ttl)
+        .unwrap_or_else(|| Instant::now() + Duration::from_secs(45));
     let mut stolen = false;
     let mut event: XEvent = std::mem::zeroed();
 
@@ -73,15 +75,18 @@ unsafe fn copy_with_ttl_inner(bytes: &[u8], ttl: Duration) -> Result<(), String>
         thread::sleep(Duration::from_millis(50));
     }
 
-    xlib::XSetSelectionOwner(display, clipboard, 0, xlib::CurrentTime as Time);
-    xlib::XFlush(display);
+    // Only release ownership if we still own the selection — never clear another client's.
+    if !stolen && xlib::XGetSelectionOwner(display, clipboard) == window {
+        xlib::XSetSelectionOwner(display, clipboard, 0, xlib::CurrentTime as Time);
+        xlib::XFlush(display);
+    }
     payload.zeroize();
 
     xlib::XDestroyWindow(display, window);
     xlib::XCloseDisplay(display);
 
     if stolen {
-        eprintln!("keymenu: clipboard ownership lost; secret cleared locally");
+        eprintln!("keymenu: clipboard ownership lost; cleared local buffer only");
     }
     Ok(())
 }

@@ -22,7 +22,7 @@ ldd target/release/keymenu | grep -E 'libX11|libXtst|libstd'
 
 | Need | Notes |
 |------|--------|
-| `dmenu` on `PATH` | Selection + password prompt |
+| `dmenu` on `PATH` | Selection + password prompt (prefer a build with `-P`) |
 | `libX11.so.6` | Clipboard ownership |
 | `libXtst.so.6` | Autotype (`XTestFakeKeyEvent`) |
 | X11 display | Interactive unlock / copy / autotype |
@@ -34,26 +34,29 @@ keymenu --db PATH [OPTIONS]
 KEYMENU_DB=PATH keymenu [OPTIONS]
 
 Options:
-  --db PATH         Path to the .kdbx database (or KEYMENU_DB)
-  --keyfile PATH    Optional keyfile (or KEYMENU_KEYFILE)
-  --ttl SECS        Clipboard clear timeout (default: 45; KEYMENU_CLIPBOARD_TTL)
-  --dmenu CMD       dmenu executable (default: dmenu; KEYMENU_DMENU)
-  -h, --help        Show help
+  --db PATH                  Path to the .kdbx database (or KEYMENU_DB)
+  --keyfile PATH             Optional keyfile (or KEYMENU_KEYFILE)
+  --ttl SECS                 Clipboard TTL 1..86400 (default 45; KEYMENU_CLIPBOARD_TTL)
+  --dmenu CMD                dmenu executable (default: dmenu; KEYMENU_DMENU)
+  --password-flag FLAG       Password flag (default: auto-detect -P / [-bfiPv];
+                             KEYMENU_DMENU_PASSWORD_FLAG)
+  --allow-visible-password   Allow unmasked password entry if no -P mode
+  --allow-keyfile-only       Allow unlock with keyfile after empty/cancelled password
+  -h, --help                 Show help
 ```
 
 Flow:
 
-1. Prompt for master password via dmenu (`-P` when the installed dmenu supports it); optional keyfile via `--keyfile`.
-2. Show entry list with `+ Add entry` plus **group-aware** paths (`Work/VPN`); select one.
-3. **Add** → prompt title / username / password, then save.
-4. For an entry, **always** show an action menu:
-   `Password` | `Username` | `Autotype` | `OTP` (if present) | custom fields | `Attachments…` (if any) | `Edit` | `Delete`.
-5. Password/Username/OTP/custom field → own X11 `CLIPBOARD` as UTF8_STRING, clear after TTL (default 45s).
-6. Autotype → type username, Tab, password into the focused window (ASCII printable).
-7. Attachments → pick a file in dmenu, then a save path (still dmenu-only).
-8. Edit / Delete → dmenu prompts (Delete asks Yes/No), then atomic save.
-
-Process exits after one action (clipboard clear may keep it alive until TTL).
+1. Prompt for master password via dmenu (`-P` when detected or configured). Without a password mode, keymenu **refuses** unless `--allow-visible-password`.
+2. Show entry list with `+ Add entry` plus **group-aware** paths (`Work/VPN`); selections are index-based. Recycle-bin entries are hidden.
+3. **Add** → prompt title / username / password (Escape cancels), then save.
+4. For an entry, **always** show an action menu (index-based):
+   `Password` | `Username` | `Autotype` | `OTP` (if present) | `Field: …` | `Attachments…` | `Edit` | `Delete`.
+5. Password/Username/OTP/custom field → extract secret, drop the unlocked DB, then own X11 `CLIPBOARD` until TTL (default 45s). If another client steals the selection, keymenu does **not** clear it.
+6. Autotype → pre-resolve all keycodes (ASCII level 0/1 only); empty username skips Tab; reject AltGr-only chars.
+7. Attachments → pick a file, then a save path (`file_name` only for the default); create 0600 / confirm overwrite.
+8. Edit → prompt shows current value; Escape=cancel, empty Enter=keep (including empty fields). Uses KeePass history tracking.
+9. Delete → recycle bin when enabled; otherwise `track_changes().remove()` with `deleted_objects`.
 
 See also `man/keymenu.1`.
 
@@ -61,8 +64,9 @@ See also `man/keymenu.1`.
 
 Writes use the `keepass` crate’s experimental **`save_kdbx4`**. **Backup your vault before editing.**
 
-- Saves are atomic (temp file + rename).
-- Saving a KDBX 3.1 file **upgrades it to KDBX4** (aligned with KeePass 2.57+).
+- Saves are atomic: `canonicalize` (write through symlinks), `create_new` temp with random suffix + preserved mode (else 0600), `sync_all`, rename, fsync parent dir.
+- Refuses to save if the file’s mtime/size changed since unlock.
+- KDBX3 → KDBX4 asks for confirmation in dmenu (not silent). KDB/KDB2 writes are refused.
 - The XML is rebuilt on save; unparsed / exotic fields may be lost.
 
 ## Smoke fixture (no display)
@@ -77,10 +81,10 @@ Interactive copy/autotype still requires a display and dmenu.
 
 ## Threat notes (short)
 
-- Unlocked secrets live in process memory until exit; `zeroize` reduces residue for owned buffers only.
-- Any X11 client can read `CLIPBOARD` while we own it; TTL limits the window.
-- Autotype sends keys to whatever has focus (focus-stealing risk).
-- Without dmenu `-P`, the password prompt is not masked — prefer a patched dmenu.
+- Unlocked secrets live in process memory until exit; `zeroize` reduces residue for owned buffers; `PR_SET_DUMPABLE=0` and `RLIMIT_CORE=0` at startup.
+- Any X11 client can read `CLIPBOARD` while we own it; TTL limits the window. Clipboard managers may keep a copy past TTL.
+- Autotype sends keys to whatever has focus (focus-stealing risk); ASCII/Shift only.
+- Without dmenu `-P` (and without `--allow-visible-password`), unlock is refused.
 
 ## License
 
