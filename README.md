@@ -48,14 +48,14 @@ Options:
 Flow:
 
 1. Prompt for master password via dmenu (`-P` when detected or configured). Without a password mode, keymenu **refuses** unless `--allow-visible-password`.
-2. Show entry list with `+ Add entry` plus **group-aware** paths (`Work/VPN`); selections are index-based. Recycle-bin entries are hidden.
+2. Show entry list with `+ Add entry` plus **group-aware** paths (`Work/VPN`); selections are index-based (`N\tlabel`). Duplicate titles append `(username)`. Recycle-bin entries are hidden.
 3. **Add** → prompt title / username / password (Escape cancels), then save.
 4. For an entry, **always** show an action menu (index-based):
    `Password` | `Username` | `Autotype` | `OTP` (if present) | `Field: …` | `Attachments…` | `Edit` | `Delete`.
 5. Password/Username/OTP/custom field → extract secret, drop the unlocked DB, then own X11 `CLIPBOARD` until TTL (default 45s). If another client steals the selection, keymenu does **not** clear it.
 6. Autotype → pre-resolve all keycodes (ASCII level 0/1 only); empty username skips Tab; reject AltGr-only chars.
 7. Attachments → pick a file, then a save path (`file_name` only for the default); create 0600 / confirm overwrite.
-8. Edit → prompt shows current value; Escape=cancel, empty Enter=keep (including empty fields). Uses KeePass history tracking.
+8. Edit → prompt shows current value; Escape=cancel, empty Enter=keep; type `-` alone to clear a non-empty field. Uses KeePass history tracking.
 9. Delete → recycle bin when enabled; otherwise `track_changes().remove()` with `deleted_objects`.
 
 See also `man/keymenu.1`.

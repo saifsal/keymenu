@@ -1,7 +1,8 @@
 //! Add / edit / delete entries and atomically save as KDBX4.
 
 use std::fs::{self, OpenOptions};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::io;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -14,12 +15,14 @@ use crate::dmenu::{self, Outcome, PasswordMode};
 use crate::secret::SecretString;
 
 const ADD_LABEL: &str = "+ Add entry";
+/// Sentinel typed into an edit prompt to clear a non-empty field.
+const CLEAR_SENTINEL: &str = "-";
 
 pub fn add_label() -> &'static str {
     ADD_LABEL
 }
 
-/// Snapshot of the vault file at unlock time (for lost-update detection + mode).
+/// Snapshot of the vault file at unlock time (for lost-update detection + mode/owner).
 #[derive(Debug, Clone)]
 pub struct FileSnapshot {
     /// Path as given by the user (may be a symlink).
@@ -30,6 +33,8 @@ pub struct FileSnapshot {
     pub mtime: SystemTime,
     pub size: u64,
     pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
 }
 
 impl FileSnapshot {
@@ -50,6 +55,8 @@ impl FileSnapshot {
             mtime: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
             size: meta.len(),
             mode: meta.permissions().mode(),
+            uid: meta.uid(),
+            gid: meta.gid(),
         })
     }
 
@@ -101,6 +108,22 @@ pub fn save_atomic(
 
     prepare_version_for_save(db, dmenu_bin)?;
 
+    // Re-check after any dmenu prompt (e.g. KDBX3 upgrade) so a sync mid-prompt is caught.
+    if !snapshot.unchanged()? {
+        return Err(format!(
+            "database changed on disk since unlock ({}); refusing to overwrite",
+            snapshot.resolved.display()
+        ));
+    }
+
+    write_atomic_bytes(db, snapshot, key)
+}
+
+fn write_atomic_bytes(
+    db: &mut Database,
+    snapshot: &FileSnapshot,
+    key: DatabaseKey,
+) -> Result<(), String> {
     let parent = snapshot
         .resolved
         .parent()
@@ -130,6 +153,23 @@ pub fn save_atomic(
             .mode(mode)
             .open(&tmp)
             .map_err(|e| format!("create {}: {e}", tmp.display()))?;
+
+        // Apply exact mode (defeat umask) and restore owning group when possible.
+        let mut perms = file
+            .metadata()
+            .map_err(|e| format!("meta {}: {e}", tmp.display()))?
+            .permissions();
+        perms.set_mode(mode);
+        fs::set_permissions(&tmp, perms)
+            .map_err(|e| format!("chmod {}: {e}", tmp.display()))?;
+        let rc = unsafe { libc::fchown(file.as_raw_fd(), snapshot.uid, snapshot.gid) };
+        if rc != 0 {
+            // Non-fatal if we lack privilege to chown (e.g. not owner of group).
+            let err = io::Error::last_os_error();
+            eprintln!(
+                "keymenu: warning: could not restore owner/group on temp file: {err}"
+            );
+        }
 
         db.save(&mut file, key)
             .map_err(|e| format!("save failed: {e}"))?;
@@ -170,7 +210,8 @@ fn fsync_dir(dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("open dir {}: {e}", dir.display()))?;
     let rc = unsafe { libc::fsync(f.as_raw_fd()) };
     if rc != 0 {
-        return Err(format!("fsync dir {}: errno", dir.display()));
+        let err = io::Error::last_os_error();
+        return Err(format!("fsync dir {}: {err}", dir.display()));
     }
     Ok(())
 }
@@ -213,6 +254,7 @@ pub fn add_entry(
 /// Interactive edit of title / username / password for an existing entry.
 ///
 /// Escape cancels; empty Enter keeps the current value (including empty fields).
+/// Type `-` alone to clear a non-empty field.
 pub fn edit_entry(
     db: &mut Database,
     entry_id: EntryId,
@@ -267,16 +309,17 @@ pub fn edit_entry(
     save_atomic(db, snapshot, key, dmenu_bin)
 }
 
-/// Returns `None` on cancel; `Some(value)` where empty string is a valid keep/clear result.
+/// Returns `None` on cancel; `Some(value)` with empty string allowed (keep or clear).
 fn edit_field(dmenu_bin: &str, name: &str, current: &str) -> Result<Option<String>, String> {
     let prompt = if current.is_empty() {
         format!("{name} [empty]")
     } else {
-        format!("{name} [{current}]")
+        format!("{name} [{current}] (− clears)")
     };
     match dmenu::prompt_free(dmenu_bin, &prompt)? {
         Outcome::Cancelled => Ok(None),
         Outcome::Empty => Ok(Some(current.to_string())), // keep (including empty)
+        Outcome::Value(v) if v == CLEAR_SENTINEL && !current.is_empty() => Ok(Some(String::new())),
         Outcome::Value(v) => Ok(Some(v)),
     }
 }
@@ -312,7 +355,6 @@ pub fn delete_entry(
                 .move_to(bin_id)
                 .map_err(|e| format!("move to recycle bin: {e}"))?;
         } else {
-            // Enabled but no bin group — fall back to hard delete with deleted_objects.
             let mut e = db
                 .entry_mut(entry_id)
                 .ok_or_else(|| "entry not found".to_string())?;
@@ -333,24 +375,73 @@ mod tests {
     use super::*;
     use crate::secret::SecretString;
     use crate::unlock::unlock_with_password;
-    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
+    use std::process::Command;
 
     fn fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/smoke.kdbx")
     }
 
-    fn temp_copy(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("keymenu-test-{}", std::process::id()));
+    fn temp_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "keymenu-test-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
         let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    fn temp_copy(name: &str) -> PathBuf {
+        let dir = temp_dir();
         let dst = dir.join(name);
         fs::copy(fixture(), &dst).expect("copy");
-        // Ensure known mode for assertions.
         let mut perms = fs::metadata(&dst).unwrap().permissions();
         perms.set_mode(0o600);
         fs::set_permissions(&dst, perms).unwrap();
         dst
+    }
+
+    fn write_fake_dmenu(dir: &Path, answers: &str) -> PathBuf {
+        let answers_path = dir.join("answers.txt");
+        fs::write(&answers_path, answers).unwrap();
+        let script = dir.join("fake-dmenu.sh");
+        // Script: -h → vanilla usage; otherwise consume stdin, emit next answer line.
+        // EMPTY → success with empty stdout; ESC → exit 1; otherwise print the line.
+        let body = format!(
+            r#"#!/bin/sh
+ANSWERS="{answers}"
+if [ "$1" = "-h" ]; then
+  echo 'usage: dmenu [-bfiv]' >&2
+  exit 1
+fi
+cat >/dev/null
+if [ ! -s "$ANSWERS" ]; then
+  exit 1
+fi
+line=$(sed -n '1p' "$ANSWERS")
+tail -n +2 "$ANSWERS" > "$ANSWERS.tmp" && mv "$ANSWERS.tmp" "$ANSWERS"
+case "$line" in
+  ESC) exit 1 ;;
+  EMPTY) exit 0 ;;
+  *) printf '%s\n' "$line"; exit 0 ;;
+esac
+"#,
+            answers = answers_path.display()
+        );
+        fs::write(&script, body).unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        script
+    }
+
+    fn visible_pw_mode() -> PasswordMode {
+        PasswordMode {
+            flag: Some(String::new()),
+            allow_visible: true,
+        }
     }
 
     #[test]
@@ -374,7 +465,6 @@ mod tests {
             });
         }
         let key = DatabaseKey::new().with_password(pw.as_str());
-        // Use a fake dmenu that isn't needed (already KDBX4).
         save_atomic(&mut db, &snap, key, "true").expect("save");
 
         assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
@@ -388,8 +478,9 @@ mod tests {
     }
 
     #[test]
-    fn edit_tracks_history_and_delete_records_uuid() {
-        let path = temp_copy("hist.kdbx");
+    fn edit_entry_and_delete_entry_via_fake_dmenu() {
+        let path = temp_copy("crud.kdbx");
+        let dir = path.parent().unwrap().to_path_buf();
         let snap = FileSnapshot::capture(&path).unwrap();
         let pw = SecretString::new("testpass".into());
         let mut db = unlock_with_password(&path, &pw).unwrap();
@@ -406,73 +497,92 @@ mod tests {
             .map(|h| h.get_entries().len())
             .unwrap_or(0);
 
-        {
-            let mut e = db.entry_mut(entry_id).unwrap();
-            e.edit_tracking(|t| {
-                t.set_protected(fields::PASSWORD, "newpass");
-            });
-        }
-        let hist_after = db
-            .entry(entry_id)
-            .unwrap()
+        // Title=Git, Username=keep empty-enter, Password=keep empty
+        let fake = write_fake_dmenu(&dir, "Git\nEMPTY\nEMPTY\n");
+        let key = DatabaseKey::new().with_password(pw.as_str());
+        edit_entry(
+            &mut db,
+            entry_id,
+            fake.to_str().unwrap(),
+            &visible_pw_mode(),
+            &snap,
+            key.clone(),
+        )
+        .expect("edit_entry");
+
+        let entry = db.entry(entry_id).unwrap();
+        assert_eq!(entry.get_title(), Some("Git"));
+        assert_eq!(entry.get_username(), Some("user@example.com"));
+        let hist_after = entry
             .history
             .as_ref()
             .map(|h| h.get_entries().len())
             .unwrap_or(0);
         assert_eq!(hist_after, hist_before + 1);
-        let entry = db.entry(entry_id).unwrap();
-        let old = entry
-            .history
-            .as_ref()
-            .unwrap()
-            .get_entries()
-            .first()
-            .unwrap()
-            .get_password()
-            .map(|s| s.to_string());
         drop(entry);
-        assert_eq!(old.as_deref(), Some("mailpass"));
 
+        // Refresh snapshot after edit saved.
+        let snap2 = FileSnapshot::capture(&path).unwrap();
+        let fake_del = write_fake_dmenu(&dir, "Yes\n");
         let uuid = entry_id.uuid();
-        {
-            let mut e = db.entry_mut(entry_id).unwrap();
-            e.track_changes().remove();
-        }
+        delete_entry(
+            &mut db,
+            entry_id,
+            fake_del.to_str().unwrap(),
+            &snap2,
+            key,
+        )
+        .expect("delete_entry");
         assert!(db.deleted_objects.contains_key(&uuid));
         assert!(db.entry(entry_id).is_none());
-
-        let key = DatabaseKey::new().with_password(pw.as_str());
-        save_atomic(&mut db, &snap, key, "true").unwrap();
     }
 
     #[test]
-    fn save_cleans_temp_on_failure() {
-        let path = temp_copy("fail.kdbx");
-        let snap = FileSnapshot::capture(&path).unwrap();
-        // Make parent read-only so create_new of temp fails... actually temp is in same dir.
-        // Use a non-writable directory by pointing resolved at a file in a ro dir — hard.
-        // Instead: force unchanged check failure.
+    fn edit_field_clear_sentinel() {
+        let dir = temp_dir();
+        let fake = write_fake_dmenu(&dir, "-\n");
+        let got = edit_field(fake.to_str().unwrap(), "Username", "alice").unwrap();
+        assert_eq!(got.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn save_cleans_temp_when_rename_fails() {
+        let dir = temp_dir();
+        let path = dir.join("vault.kdbx");
+        fs::copy(fixture(), &path).unwrap();
+        let mut snap = FileSnapshot::capture(&path).unwrap();
         let pw = SecretString::new("testpass".into());
         let mut db = unlock_with_password(&path, &pw).unwrap();
-        // Touch the file to change mtime/size snapshot mismatch.
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        OpenOptions::new()
-            .write(true)
-            .append(true)
-            .open(&path)
-            .unwrap()
-            .write_all(b"x")
-            .ok();
-        // Re-truncate? Actually we corrupted the file. Simpler: just check unchanged() is false.
-        assert!(!snap.unchanged().unwrap());
+
+        // Replace the vault file with a directory so rename(tmp → path) fails with EISDIR,
+        // after a temp file has been created. Refresh snapshot so unchanged() passes.
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let meta = fs::metadata(&path).unwrap();
+        snap.mtime = meta.modified().unwrap();
+        snap.size = meta.len();
+        snap.mode = meta.permissions().mode();
+
         let key = DatabaseKey::new().with_password(pw.as_str());
         let err = save_atomic(&mut db, &snap, key, "true").unwrap_err();
-        assert!(err.contains("changed on disk"));
-        // No leftover temps
-        let parent = path.parent().unwrap();
-        for e in fs::read_dir(parent).unwrap() {
+        assert!(
+            err.contains("rename") || err.contains("Is a directory") || err.contains("EISDIR"),
+            "unexpected err: {err}"
+        );
+        for e in fs::read_dir(&dir).unwrap() {
             let n = e.unwrap().file_name().to_string_lossy().into_owned();
-            assert!(!n.contains(".keymenu.") || !n.ends_with(".tmp"), "{n}");
+            assert!(
+                !n.contains(".keymenu.") || !n.ends_with(".tmp"),
+                "leftover temp: {n}"
+            );
         }
+    }
+
+    #[test]
+    fn fake_dmenu_script_is_executable() {
+        let dir = temp_dir();
+        let fake = write_fake_dmenu(&dir, "x\n");
+        let status = Command::new(&fake).arg("-h").status().unwrap();
+        assert!(!status.success());
     }
 }

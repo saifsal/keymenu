@@ -38,7 +38,18 @@ unsafe fn copy_with_ttl_inner(bytes: &[u8], ttl: Duration) -> Result<(), String>
     let targets = intern(display, "TARGETS");
     let xsel_data = intern(display, "XSEL_DATA");
 
-    xlib::XSetSelectionOwner(display, clipboard, window, xlib::CurrentTime as Time);
+    // Obtain a real server timestamp so a later release with that stamp cannot
+    // clear a newer owner's selection (ICCCM).
+    let owned_at = match server_time(display, window) {
+        Ok(t) => t,
+        Err(e) => {
+            xlib::XDestroyWindow(display, window);
+            xlib::XCloseDisplay(display);
+            return Err(e);
+        }
+    };
+
+    xlib::XSetSelectionOwner(display, clipboard, window, owned_at);
     xlib::XFlush(display);
 
     if xlib::XGetSelectionOwner(display, clipboard) != window {
@@ -75,9 +86,10 @@ unsafe fn copy_with_ttl_inner(bytes: &[u8], ttl: Duration) -> Result<(), String>
         thread::sleep(Duration::from_millis(50));
     }
 
-    // Only release ownership if we still own the selection — never clear another client's.
+    // Only release ownership if we still own it, using our acquisition timestamp
+    // (not CurrentTime) so a concurrent newer owner is not cleared.
     if !stolen && xlib::XGetSelectionOwner(display, clipboard) == window {
-        xlib::XSetSelectionOwner(display, clipboard, 0, xlib::CurrentTime as Time);
+        xlib::XSetSelectionOwner(display, clipboard, 0, owned_at);
         xlib::XFlush(display);
     }
     payload.zeroize();
@@ -89,6 +101,38 @@ unsafe fn copy_with_ttl_inner(bytes: &[u8], ttl: Duration) -> Result<(), String>
         eprintln!("keymenu: clipboard ownership lost; cleared local buffer only");
     }
     Ok(())
+}
+
+/// ICCCM trick: PropertyNotify on a change gives a usable server Time.
+unsafe fn server_time(display: *mut Display, window: Window) -> Result<Time, String> {
+    xlib::XSelectInput(display, window, xlib::PropertyChangeMask);
+    let atom = intern(display, "_KEYMENU_CLIPBOARD_TIME");
+    let mut zero: u8 = 0;
+    xlib::XChangeProperty(
+        display,
+        window,
+        atom,
+        atom,
+        8,
+        xlib::PropModeReplace,
+        &mut zero,
+        1,
+    );
+    xlib::XFlush(display);
+
+    let mut event: XEvent = std::mem::zeroed();
+    // Bound the wait so a broken X connection cannot hang forever.
+    for _ in 0..1000 {
+        if xlib::XPending(display) == 0 {
+            thread::sleep(Duration::from_millis(1));
+            continue;
+        }
+        xlib::XNextEvent(display, &mut event);
+        if event.get_type() == xlib::PropertyNotify {
+            return Ok(event.property.time);
+        }
+    }
+    Err("timed out waiting for X server timestamp".into())
 }
 
 unsafe fn intern(display: *mut Display, name: &str) -> Atom {

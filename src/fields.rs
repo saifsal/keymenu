@@ -2,7 +2,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use keepass::db::{fields as kp_fields, EntryRef};
@@ -110,8 +110,9 @@ pub fn save_attachment(entry: &EntryRef<'_>, dmenu_bin: &str) -> Result<(), Stri
     Ok(())
 }
 
-fn write_attachment_file(path: &Path, data: &[u8], dmenu_bin: &str) -> Result<(), String> {
-    if path.exists() {
+/// Write attachment via temp `create_new` 0600 + rename (does not follow symlinks).
+pub fn write_attachment_file(path: &Path, data: &[u8], dmenu_bin: &str) -> Result<(), String> {
+    if path_exists_including_symlink(path) {
         let choices = vec!["No".into(), "Yes".into()];
         let confirm = dmenu::select(
             dmenu_bin,
@@ -122,36 +123,58 @@ fn write_attachment_file(path: &Path, data: &[u8], dmenu_bin: &str) -> Result<()
         if confirm != "Yes" {
             return Err("overwrite cancelled".into());
         }
-        // Replace via create truncating after confirm.
+    }
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    if !parent.as_os_str().is_empty() {
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    }
+
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = parent.join(format!(
+        ".{}.keymenu-att.{}.tmp",
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("attachment"),
+        suffix
+    ));
+
+    let write_result = (|| -> Result<(), String> {
         let mut file = OpenOptions::new()
             .write(true)
-            .truncate(true)
-            .open(path)
-            .map_err(|e| format!("open {}: {e}", path.display()))?;
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|e| format!("create {}: {e}", tmp.display()))?;
+        // Defeat umask narrowing.
+        let mut perms = file.metadata().map_err(|e| format!("meta: {e}"))?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(&tmp, perms).map_err(|e| format!("chmod {}: {e}", tmp.display()))?;
+
         file.write_all(data)
-            .map_err(|e| format!("write {}: {e}", path.display()))?;
-        let _ = file.sync_all();
-        return Ok(());
-    }
+            .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        file.sync_all()
+            .map_err(|e| format!("sync {}: {e}", tmp.display()))?;
+        drop(file);
 
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
-        }
-    }
+        // rename replaces a symlink at `path` rather than writing through it.
+        fs::rename(&tmp, path).map_err(|e| {
+            format!("rename {} → {}: {e}", tmp.display(), path.display())
+        })?;
+        Ok(())
+    })();
 
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|e| format!("create {}: {e}", path.display()))?;
-    file.write_all(data)
-        .map_err(|e| format!("write {}: {e}", path.display()))?;
-    file.sync_all()
-        .map_err(|e| format!("sync {}: {e}", path.display()))?;
-    Ok(())
+    if write_result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    write_result
+}
+
+fn path_exists_including_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
 }
 
 fn default_save_path(name: &str) -> String {
@@ -182,6 +205,7 @@ pub fn copy_secret(secret: &SecretString, cfg: &Config) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::unlock::unlock_with_password;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
     #[test]
@@ -208,5 +232,42 @@ mod tests {
         assert!(!p.contains("/home/u/.bashrc"));
         let p2 = default_save_path("../x");
         assert!(p2.ends_with("x"));
+    }
+
+    #[test]
+    fn overwrite_uses_temp_rename_not_symlink_target() {
+        let dir = std::env::temp_dir().join(format!("keymenu-att-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let real = dir.join("real.key");
+        let link = dir.join("link.key");
+        fs::write(&real, b"old-secret").unwrap();
+        let mut perms = fs::metadata(&real).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&real, perms).unwrap();
+        let _ = fs::remove_file(&link);
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        // Confirm overwrite via fake dmenu that always answers Yes.
+        let fake = dir.join("yes-dmenu.sh");
+        fs::write(
+            &fake,
+            "#!/bin/sh\nif [ \"$1\" = \"-h\" ]; then echo 'usage: dmenu [-bfiv]' >&2; exit 1; fi\ncat >/dev/null\necho Yes\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = fs::metadata(&fake).unwrap().permissions();
+            p.set_mode(0o755);
+            fs::set_permissions(&fake, p).unwrap();
+        }
+
+        write_attachment_file(&link, b"new-secret", fake.to_str().unwrap()).unwrap();
+
+        // Symlink replaced by a regular 0600 file; target untouched.
+        assert!(!link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(&link).unwrap(), b"new-secret");
+        assert_eq!(fs::metadata(&link).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::read(&real).unwrap(), b"old-secret");
     }
 }
