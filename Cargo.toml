@@ -13,7 +13,7 @@ name = "keymenu"
 path = "src/main.rs"
 
 [dependencies]
-keepass = { version = "0.17", default-features = false }
+keepass = { version = "0.17", default-features = false, features = ["save_kdbx4"] }
 zeroize = { version = "1", features = ["derive"] }
 libc = "0.2"
 

@@ -1,10 +1,11 @@
 //! Post-select action menu (always shown).
 
-use keepass::db::EntryRef;
-use keepass::Database;
+use keepass::db::{EntryId, EntryRef};
+use keepass::{Database, DatabaseKey};
 
 use crate::config::Config;
 use crate::dmenu;
+use crate::mutate;
 use crate::secret::{self, SecretString};
 
 #[cfg(target_os = "linux")]
@@ -13,30 +14,44 @@ use crate::{autotype, clipboard};
 pub const ACTION_PASSWORD: &str = "Password";
 pub const ACTION_USERNAME: &str = "Username";
 pub const ACTION_AUTOTYPE: &str = "Autotype";
+pub const ACTION_EDIT: &str = "Edit";
+pub const ACTION_DELETE: &str = "Delete";
 
-/// Base actions for commit 1.
-pub fn base_actions() -> Vec<String> {
+/// Actions shown after selecting an entry.
+pub fn entry_actions() -> Vec<String> {
     vec![
         ACTION_PASSWORD.into(),
         ACTION_USERNAME.into(),
         ACTION_AUTOTYPE.into(),
+        ACTION_EDIT.into(),
+        ACTION_DELETE.into(),
     ]
 }
 
 /// Run the always-on action menu for a selected entry.
-pub fn run_for_entry(db: &Database, entry_id: keepass::db::EntryId, cfg: &Config) -> Result<(), String> {
-    let entry = db
-        .entry(entry_id)
-        .ok_or_else(|| "selected entry no longer exists".to_string())?;
-
-    let actions = base_actions();
+pub fn run_for_entry(
+    db: &mut Database,
+    entry_id: EntryId,
+    cfg: &Config,
+    key: DatabaseKey,
+) -> Result<(), String> {
+    let actions = entry_actions();
     let choice = dmenu::select(&cfg.dmenu_bin, "action", &actions)?
         .ok_or_else(|| "no action selected".to_string())?;
 
-    dispatch(&entry, &choice, cfg)
+    match choice.as_str() {
+        ACTION_EDIT => mutate::edit_entry(db, entry_id, &cfg.dmenu_bin, &cfg.db_path, key),
+        ACTION_DELETE => mutate::delete_entry(db, entry_id, &cfg.dmenu_bin, &cfg.db_path, key),
+        other => {
+            let entry = db
+                .entry(entry_id)
+                .ok_or_else(|| "selected entry no longer exists".to_string())?;
+            dispatch_copy_or_type(&entry, other, cfg)
+        }
+    }
 }
 
-fn dispatch(entry: &EntryRef<'_>, choice: &str, cfg: &Config) -> Result<(), String> {
+fn dispatch_copy_or_type(entry: &EntryRef<'_>, choice: &str, cfg: &Config) -> Result<(), String> {
     match choice {
         ACTION_PASSWORD => {
             let pw = entry
