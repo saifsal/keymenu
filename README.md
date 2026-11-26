@@ -34,23 +34,34 @@ keymenu --db PATH [OPTIONS]
 KEYMENU_DB=PATH keymenu [OPTIONS]
 
 Options:
-  --db PATH       Path to the .kdbx database (or KEYMENU_DB)
-  --ttl SECS      Clipboard clear timeout (default: 45; KEYMENU_CLIPBOARD_TTL)
-  --dmenu CMD     dmenu executable (default: dmenu; KEYMENU_DMENU)
-  -h, --help      Show help
+  --db PATH         Path to the .kdbx database (or KEYMENU_DB)
+  --keyfile PATH    Optional keyfile (or KEYMENU_KEYFILE)
+  --ttl SECS        Clipboard clear timeout (default: 45; KEYMENU_CLIPBOARD_TTL)
+  --dmenu CMD       dmenu executable (default: dmenu; KEYMENU_DMENU)
+  -h, --help        Show help
 ```
 
 Flow:
 
-1. Prompt for master password via dmenu (`-P` when the installed dmenu supports it).
-2. Show a flat entry list; select one entry.
-3. **Always** show an action menu: `Password` | `Username` | `Autotype`.
-4. Password/Username → own X11 `CLIPBOARD` as UTF8_STRING, clear after TTL (default 45s).
-5. Autotype → type username, Tab, password into the focused window (ASCII printable).
+1. Prompt for master password via dmenu (`-P` when the installed dmenu supports it); optional keyfile via `--keyfile`.
+2. Show entry list with `+ Add entry` plus flat titles; select one.
+3. **Add** → prompt title / username / password, then save.
+4. For an entry, **always** show an action menu: `Password` | `Username` | `Autotype` | `Edit` | `Delete`.
+5. Password/Username → own X11 `CLIPBOARD` as UTF8_STRING, clear after TTL (default 45s).
+6. Autotype → type username, Tab, password into the focused window (ASCII printable).
+7. Edit / Delete → dmenu prompts (Delete asks Yes/No), then atomic save.
 
 Process exits after one action (clipboard clear may keep it alive until TTL).
 
 See also `man/keymenu.1`.
+
+## Saving / backups
+
+Writes use the `keepass` crate’s experimental **`save_kdbx4`**. **Backup your vault before editing.**
+
+- Saves are atomic (temp file + rename).
+- Saving a KDBX 3.1 file **upgrades it to KDBX4** (aligned with KeePass 2.57+).
+- The XML is rebuilt on save; unparsed / exotic fields may be lost.
 
 ## Smoke fixture (no display)
 

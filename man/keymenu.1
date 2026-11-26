@@ -21,6 +21,9 @@ via libXtst. There is no daemon and no KeePassXC dependency.
 .BI \-\-db " PATH"
 Path to the \fI.kdbx\fP file. Alternatively set \fBKEYMENU_DB\fP.
 .TP
+.BI \-\-keyfile " PATH"
+Optional keyfile. Alternatively set \fBKEYMENU_KEYFILE\fP.
+.TP
 .BI \-\-ttl " SECS"
 Clipboard ownership lifetime in seconds (default 45). Also
 \fBKEYMENU_CLIPBOARD_TTL\fP.
@@ -35,6 +38,9 @@ Print usage.
 .B KEYMENU_DB
 Default database path.
 .TP
+.B KEYMENU_KEYFILE
+Optional keyfile path.
+.TP
 .B KEYMENU_DMENU
 Override dmenu binary.
 .TP
@@ -45,6 +51,9 @@ Clipboard TTL in seconds.
 Required for interactive use (dmenu, clipboard, autotype).
 .SH RUNTIME DEPENDENCIES
 dmenu on PATH; libX11.so.6; libXtst.so.6.
+.SH FILES
+Saves use a temporary sibling file then \fBrename\fP(2). Backup vaults
+before editing: \fBsave_kdbx4\fP is experimental and upgrades KDBX 3.1 to 4.
 .SH SEE ALSO
 .BR dmenu (1)
 .SH NOTES
