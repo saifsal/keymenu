@@ -115,7 +115,8 @@ ENTRY LIST:
   <entry>           Select an entry, then choose an action
 
 ACTIONS (after entry select):
-  Password | Username | Autotype | Edit | Delete
+  Password | Username | Autotype | OTP? | <custom fields> | Attachments…? | Edit | Delete
+  Entry list uses Group/Title paths.
 
 RUNTIME DEPENDENCIES:
   dmenu on PATH; libX11.so.6 and libXtst.so.6 (build: libx11-dev libxtst-dev).

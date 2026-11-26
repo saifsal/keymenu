@@ -12,10 +12,11 @@ keymenu \- dmenu KeePass/KDBX password menu
 .SH DESCRIPTION
 .B keymenu
 unlocks a KeePass database, lets you pick an entry with
-.BR dmenu (1),
-then always shows an action menu (Password, Username, Autotype).
-Passwords are placed on the X11 CLIPBOARD with a timed clear, or typed
-via libXtst. There is no daemon and no KeePassXC dependency.
+.BR dmenu (1)
+using group-aware paths, then always shows an action menu (Password,
+Username, Autotype, optional OTP / custom fields / attachments, Edit,
+Delete). Secrets are placed on the X11 CLIPBOARD with a timed clear, or
+typed via libXtst. There is no daemon and no KeePassXC dependency.
 .SH OPTIONS
 .TP
 .BI \-\-db " PATH"

@@ -5,6 +5,7 @@ use keepass::{Database, DatabaseKey};
 
 use crate::config::Config;
 use crate::dmenu;
+use crate::fields::{self, ACTION_ATTACHMENTS, ACTION_OTP};
 use crate::mutate;
 use crate::secret::{self, SecretString};
 
@@ -17,15 +18,25 @@ pub const ACTION_AUTOTYPE: &str = "Autotype";
 pub const ACTION_EDIT: &str = "Edit";
 pub const ACTION_DELETE: &str = "Delete";
 
-/// Actions shown after selecting an entry.
-pub fn entry_actions() -> Vec<String> {
-    vec![
+/// Build the action list for an entry (OTP / custom fields / attachments when present).
+pub fn actions_for_entry(entry: &EntryRef<'_>) -> Vec<String> {
+    let mut actions = vec![
         ACTION_PASSWORD.into(),
         ACTION_USERNAME.into(),
         ACTION_AUTOTYPE.into(),
-        ACTION_EDIT.into(),
-        ACTION_DELETE.into(),
-    ]
+    ];
+    if fields::has_otp(entry) {
+        actions.push(ACTION_OTP.into());
+    }
+    for name in fields::custom_field_names(entry) {
+        actions.push(name);
+    }
+    if fields::has_attachments(entry) {
+        actions.push(ACTION_ATTACHMENTS.into());
+    }
+    actions.push(ACTION_EDIT.into());
+    actions.push(ACTION_DELETE.into());
+    actions
 }
 
 /// Run the always-on action menu for a selected entry.
@@ -35,7 +46,13 @@ pub fn run_for_entry(
     cfg: &Config,
     key: DatabaseKey,
 ) -> Result<(), String> {
-    let actions = entry_actions();
+    let actions = {
+        let entry = db
+            .entry(entry_id)
+            .ok_or_else(|| "selected entry no longer exists".to_string())?;
+        actions_for_entry(&entry)
+    };
+
     let choice = dmenu::select(&cfg.dmenu_bin, "action", &actions)?
         .ok_or_else(|| "no action selected".to_string())?;
 
@@ -46,33 +63,45 @@ pub fn run_for_entry(
             let entry = db
                 .entry(entry_id)
                 .ok_or_else(|| "selected entry no longer exists".to_string())?;
-            dispatch_copy_or_type(&entry, other, cfg)
+            dispatch(&entry, other, cfg)
         }
     }
 }
 
-fn dispatch_copy_or_type(entry: &EntryRef<'_>, choice: &str, cfg: &Config) -> Result<(), String> {
+fn dispatch(entry: &EntryRef<'_>, choice: &str, cfg: &Config) -> Result<(), String> {
     match choice {
         ACTION_PASSWORD => {
             let pw = entry
                 .get_password()
                 .ok_or_else(|| "entry has no password".to_string())?;
-            let secret = secret::owned(pw);
-            copy_secret(&secret, cfg)?;
+            copy_secret(&secret::owned(pw), cfg)?;
         }
         ACTION_USERNAME => {
             let user = entry
                 .get_username()
                 .ok_or_else(|| "entry has no username".to_string())?;
-            let secret = secret::owned(user);
-            copy_secret(&secret, cfg)?;
+            copy_secret(&secret::owned(user), cfg)?;
         }
         ACTION_AUTOTYPE => {
             let user = secret::owned(entry.get_username().unwrap_or(""));
             let pw = secret::owned(entry.get_password().unwrap_or(""));
             autotype_user_pass(&user, &pw)?;
         }
-        other => return Err(format!("unknown action: {other}")),
+        ACTION_OTP => {
+            let code = fields::otp_code(entry)?;
+            copy_secret(&code, cfg)?;
+        }
+        ACTION_ATTACHMENTS => {
+            fields::save_attachment(entry, &cfg.dmenu_bin)?;
+        }
+        other => {
+            // Custom field name selected from the action menu.
+            if fields::custom_field_names(entry).iter().any(|n| n == other) {
+                fields::copy_field(entry, other, cfg)?;
+            } else {
+                return Err(format!("unknown action: {other}"));
+            }
+        }
     }
     Ok(())
 }
