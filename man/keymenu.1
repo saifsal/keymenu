@@ -1,0 +1,53 @@
+.TH KEYMENU 1 "2026-11-26" "keymenu 0.1" "User Commands"
+.SH NAME
+keymenu \- dmenu KeePass/KDBX password menu
+.SH SYNOPSIS
+.B keymenu
+.B \-\-db
+.I PATH
+.RI [ options ]
+.br
+.B KEYMENU_DB=\fIPATH\fP keymenu
+.RI [ options ]
+.SH DESCRIPTION
+.B keymenu
+unlocks a KeePass database, lets you pick an entry with
+.BR dmenu (1),
+then always shows an action menu (Password, Username, Autotype).
+Passwords are placed on the X11 CLIPBOARD with a timed clear, or typed
+via libXtst. There is no daemon and no KeePassXC dependency.
+.SH OPTIONS
+.TP
+.BI \-\-db " PATH"
+Path to the \fI.kdbx\fP file. Alternatively set \fBKEYMENU_DB\fP.
+.TP
+.BI \-\-ttl " SECS"
+Clipboard ownership lifetime in seconds (default 45). Also
+\fBKEYMENU_CLIPBOARD_TTL\fP.
+.TP
+.BI \-\-dmenu " CMD"
+dmenu executable (default \fBdmenu\fP). Also \fBKEYMENU_DMENU\fP.
+.TP
+.BR \-h ", " \-\-help
+Print usage.
+.SH ENVIRONMENT
+.TP
+.B KEYMENU_DB
+Default database path.
+.TP
+.B KEYMENU_DMENU
+Override dmenu binary.
+.TP
+.B KEYMENU_CLIPBOARD_TTL
+Clipboard TTL in seconds.
+.TP
+.B DISPLAY
+Required for interactive use (dmenu, clipboard, autotype).
+.SH RUNTIME DEPENDENCIES
+dmenu on PATH; libX11.so.6; libXtst.so.6.
+.SH SEE ALSO
+.BR dmenu (1)
+.SH NOTES
+Master password is prompted with dmenu \fB\-P\fP when available.
+Autotype is ASCII-first. Build against system X libs via pkg-config;
+do not enable \fB\-C prefer\-dynamic\fP for normal installs.

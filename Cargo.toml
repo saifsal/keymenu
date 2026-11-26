@@ -1,0 +1,26 @@
+[package]
+name = "keymenu"
+version = "0.1.0"
+edition = "2021"
+description = "Suckless-inspired dmenu KeePass/KDBX password menu (libX11 clipboard, libXtst autotype)"
+license = "GPL-3.0-or-later"
+readme = "README.md"
+keywords = ["keepass", "kdbx", "dmenu", "password"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "keymenu"
+path = "src/main.rs"
+
+[dependencies]
+keepass = { version = "0.17", default-features = false }
+zeroize = { version = "1", features = ["derive"] }
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11 = { version = "2.21", features = ["xlib", "xtest"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
