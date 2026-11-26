@@ -1,16 +1,16 @@
 //! Post-select action menu (always shown).
 
-use keepass::db::{EntryId, EntryRef};
+use keepass::db::EntryId;
 use keepass::{Database, DatabaseKey};
 
 use crate::config::Config;
 use crate::dmenu;
 use crate::fields::{self, ACTION_ATTACHMENTS, ACTION_OTP};
-use crate::mutate;
+use crate::mutate::{self, FileSnapshot};
 use crate::secret::{self, SecretString};
 
 #[cfg(target_os = "linux")]
-use crate::{autotype, clipboard};
+use crate::autotype;
 
 pub const ACTION_PASSWORD: &str = "Password";
 pub const ACTION_USERNAME: &str = "Username";
@@ -18,8 +18,18 @@ pub const ACTION_AUTOTYPE: &str = "Autotype";
 pub const ACTION_EDIT: &str = "Edit";
 pub const ACTION_DELETE: &str = "Delete";
 
+/// Outcome that lets the caller drop `db`/`key` before a long clipboard hold.
+pub enum AfterAction {
+    Done,
+    Clipboard(SecretString),
+    Autotype {
+        username: SecretString,
+        password: SecretString,
+    },
+}
+
 /// Build the action list for an entry (OTP / custom fields / attachments when present).
-pub fn actions_for_entry(entry: &EntryRef<'_>) -> Vec<String> {
+pub fn actions_for_entry(entry: &keepass::db::EntryRef<'_>) -> Vec<String> {
     let mut actions = vec![
         ACTION_PASSWORD.into(),
         ACTION_USERNAME.into(),
@@ -29,7 +39,9 @@ pub fn actions_for_entry(entry: &EntryRef<'_>) -> Vec<String> {
         actions.push(ACTION_OTP.into());
     }
     for name in fields::custom_field_names(entry) {
-        actions.push(name);
+        // Prefix so custom fields cannot collide with built-in action names in display;
+        // selection is still index-based.
+        actions.push(format!("Field: {name}"));
     }
     if fields::has_attachments(entry) {
         actions.push(ACTION_ATTACHMENTS.into());
@@ -45,7 +57,8 @@ pub fn run_for_entry(
     entry_id: EntryId,
     cfg: &Config,
     key: DatabaseKey,
-) -> Result<(), String> {
+    snapshot: &FileSnapshot,
+) -> Result<AfterAction, String> {
     let actions = {
         let entry = db
             .entry(entry_id)
@@ -53,79 +66,91 @@ pub fn run_for_entry(
         actions_for_entry(&entry)
     };
 
-    let choice = dmenu::select(&cfg.dmenu_bin, "action", &actions)?
+    let idx = dmenu::select_index(&cfg.dmenu_bin, "action", &actions)?
         .ok_or_else(|| "no action selected".to_string())?;
+    let choice = actions
+        .get(idx)
+        .ok_or_else(|| "invalid action index".to_string())?;
 
     match choice.as_str() {
-        ACTION_EDIT => mutate::edit_entry(db, entry_id, &cfg.dmenu_bin, &cfg.db_path, key),
-        ACTION_DELETE => mutate::delete_entry(db, entry_id, &cfg.dmenu_bin, &cfg.db_path, key),
-        other => {
+        ACTION_EDIT => {
+            mutate::edit_entry(
+                db,
+                entry_id,
+                &cfg.dmenu_bin,
+                &cfg.password_mode,
+                snapshot,
+                key,
+            )?;
+            Ok(AfterAction::Done)
+        }
+        ACTION_DELETE => {
+            mutate::delete_entry(db, entry_id, &cfg.dmenu_bin, snapshot, key)?;
+            Ok(AfterAction::Done)
+        }
+        ACTION_ATTACHMENTS => {
             let entry = db
                 .entry(entry_id)
                 .ok_or_else(|| "selected entry no longer exists".to_string())?;
-            dispatch(&entry, other, cfg)
+            fields::save_attachment(&entry, &cfg.dmenu_bin)?;
+            Ok(AfterAction::Done)
         }
-    }
-}
-
-fn dispatch(entry: &EntryRef<'_>, choice: &str, cfg: &Config) -> Result<(), String> {
-    match choice {
+        ACTION_AUTOTYPE => {
+            let entry = db
+                .entry(entry_id)
+                .ok_or_else(|| "selected entry no longer exists".to_string())?;
+            let username = secret::owned(entry.get_username().unwrap_or(""));
+            let password = secret::owned(entry.get_password().unwrap_or(""));
+            Ok(AfterAction::Autotype {
+                username,
+                password,
+            })
+        }
         ACTION_PASSWORD => {
+            let entry = db
+                .entry(entry_id)
+                .ok_or_else(|| "selected entry no longer exists".to_string())?;
             let pw = entry
                 .get_password()
                 .ok_or_else(|| "entry has no password".to_string())?;
-            copy_secret(&secret::owned(pw), cfg)?;
+            Ok(AfterAction::Clipboard(secret::owned(pw)))
         }
         ACTION_USERNAME => {
+            let entry = db
+                .entry(entry_id)
+                .ok_or_else(|| "selected entry no longer exists".to_string())?;
             let user = entry
                 .get_username()
                 .ok_or_else(|| "entry has no username".to_string())?;
-            copy_secret(&secret::owned(user), cfg)?;
-        }
-        ACTION_AUTOTYPE => {
-            let user = secret::owned(entry.get_username().unwrap_or(""));
-            let pw = secret::owned(entry.get_password().unwrap_or(""));
-            autotype_user_pass(&user, &pw)?;
+            Ok(AfterAction::Clipboard(secret::owned(user)))
         }
         ACTION_OTP => {
-            let code = fields::otp_code(entry)?;
-            copy_secret(&code, cfg)?;
+            let entry = db
+                .entry(entry_id)
+                .ok_or_else(|| "selected entry no longer exists".to_string())?;
+            Ok(AfterAction::Clipboard(fields::otp_code(&entry)?))
         }
-        ACTION_ATTACHMENTS => {
-            fields::save_attachment(entry, &cfg.dmenu_bin)?;
+        other if other.starts_with("Field: ") => {
+            let name = &other["Field: ".len()..];
+            let entry = db
+                .entry(entry_id)
+                .ok_or_else(|| "selected entry no longer exists".to_string())?;
+            Ok(AfterAction::Clipboard(fields::copy_field_value(
+                &entry, name,
+            )?))
         }
-        other => {
-            // Custom field name selected from the action menu.
-            if fields::custom_field_names(entry).iter().any(|n| n == other) {
-                fields::copy_field(entry, other, cfg)?;
-            } else {
-                return Err(format!("unknown action: {other}"));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn copy_secret(secret: &SecretString, cfg: &Config) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    {
-        clipboard::copy_with_ttl(secret, cfg.clipboard_ttl)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (secret, cfg);
-        Err("clipboard is only supported on Linux/X11".into())
+        other => Err(format!("unknown action: {other}")),
     }
 }
 
-fn autotype_user_pass(user: &SecretString, pw: &SecretString) -> Result<(), String> {
+pub fn run_autotype(username: &SecretString, password: &SecretString) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        autotype::username_tab_password(user, pw)
+        autotype::username_tab_password(username, password)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (user, pw);
+        let _ = (username, password);
         Err("autotype is only supported on Linux/X11".into())
     }
 }

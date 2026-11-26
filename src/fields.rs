@@ -1,16 +1,19 @@
 //! Custom fields, attachments, and TOTP helpers (dmenu-only UX).
 
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 
 use keepass::db::{fields as kp_fields, EntryRef};
+use zeroize::Zeroize;
 
-use crate::dmenu;
+use crate::config::Config;
+use crate::dmenu::{self, Outcome};
 use crate::secret::{self, SecretString};
 
 #[cfg(target_os = "linux")]
 use crate::clipboard;
-use crate::config::Config;
 
 pub const ACTION_OTP: &str = "OTP";
 pub const ACTION_ATTACHMENTS: &str = "Attachments…";
@@ -52,66 +55,118 @@ pub fn custom_field_names(entry: &EntryRef<'_>) -> Vec<String> {
 }
 
 /// Copy a named field value to the clipboard.
-pub fn copy_field(entry: &EntryRef<'_>, name: &str, cfg: &Config) -> Result<(), String> {
+pub fn copy_field_value(entry: &EntryRef<'_>, name: &str) -> Result<SecretString, String> {
     let value = entry
         .get(name)
         .ok_or_else(|| format!("field {name} missing"))?;
-    let secret = secret::owned(value);
-    copy_secret(&secret, cfg)
+    Ok(secret::owned(value))
 }
 
 pub fn has_attachments(entry: &EntryRef<'_>) -> bool {
     entry.attachments().next().is_some()
 }
 
-/// List attachments, pick one, prompt for destination path, write bytes.
-pub fn save_attachment(entry: &EntryRef<'_>, dmenu_bin: &str) -> Result<(), String> {
-    let named: Vec<(String, Vec<u8>)> = entry
+/// List attachment names only (no data clone until one is chosen).
+pub fn attachment_names(entry: &EntryRef<'_>) -> Vec<String> {
+    entry
         .attachments_named()
-        .map(|(name, att)| {
-            let data = att.get().clone();
-            (name.to_string(), data)
-        })
-        .collect();
+        .map(|(n, _)| n.to_string())
+        .collect()
+}
 
-    if named.is_empty() {
+/// List attachments, pick one, prompt for destination path, write with 0600 / create_new.
+pub fn save_attachment(entry: &EntryRef<'_>, dmenu_bin: &str) -> Result<(), String> {
+    let names = attachment_names(entry);
+    if names.is_empty() {
         return Err("entry has no attachments".into());
     }
 
-    let labels: Vec<String> = named.iter().map(|(n, _)| n.clone()).collect();
-    let choice = dmenu::select(dmenu_bin, "attachment", &labels)?
+    let idx = dmenu::select_index(dmenu_bin, "attachment", &names)?
         .ok_or_else(|| "no attachment selected".to_string())?;
+    let name = names
+        .get(idx)
+        .ok_or_else(|| "invalid attachment index".to_string())?;
 
-    let (name, data) = named
-        .into_iter()
-        .find(|(n, _)| n == &choice)
-        .ok_or_else(|| format!("unknown attachment: {choice}"))?;
+    let att = entry
+        .attachment_by_name(name)
+        .ok_or_else(|| format!("attachment missing: {name}"))?;
+    let mut data = att.get().clone();
 
-    let default = default_save_path(&name);
-    let dest = dmenu::select(dmenu_bin, "save path", &[default.clone()])?
-        .ok_or_else(|| "save cancelled".to_string())?;
-    let dest = if dest.is_empty() { default } else { dest };
+    let default = default_save_path(name);
+    let dest = match dmenu::prompt_free(dmenu_bin, &format!("save path [{default}]"))? {
+        Outcome::Cancelled => {
+            data.zeroize();
+            return Err("save cancelled".into());
+        }
+        Outcome::Empty => default,
+        Outcome::Value(v) => v,
+    };
 
     let path = PathBuf::from(&dest);
+    let result = write_attachment_file(&path, &data, dmenu_bin);
+    data.zeroize();
+    result?;
+    eprintln!("keymenu: wrote attachment to {}", path.display());
+    Ok(())
+}
+
+fn write_attachment_file(path: &Path, data: &[u8], dmenu_bin: &str) -> Result<(), String> {
+    if path.exists() {
+        let choices = vec!["No".into(), "Yes".into()];
+        let confirm = dmenu::select(
+            dmenu_bin,
+            &format!("Overwrite {}?", path.display()),
+            &choices,
+        )?
+        .ok_or_else(|| "overwrite cancelled".to_string())?;
+        if confirm != "Yes" {
+            return Err("overwrite cancelled".into());
+        }
+        // Replace via create truncating after confirm.
+        let mut file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .map_err(|e| format!("open {}: {e}", path.display()))?;
+        file.write_all(data)
+            .map_err(|e| format!("write {}: {e}", path.display()))?;
+        let _ = file.sync_all();
+        return Ok(());
+    }
+
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
         }
     }
-    fs::write(&path, &data).map_err(|e| format!("write {}: {e}", path.display()))?;
-    eprintln!("keymenu: wrote attachment to {}", path.display());
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("create {}: {e}", path.display()))?;
+    file.write_all(data)
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    file.sync_all()
+        .map_err(|e| format!("sync {}: {e}", path.display()))?;
     Ok(())
 }
 
 fn default_save_path(name: &str) -> String {
+    let base = Path::new(name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("attachment.bin");
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    home.join(name).to_string_lossy().into_owned()
+    home.join(base).to_string_lossy().into_owned()
 }
 
-fn copy_secret(secret: &SecretString, cfg: &Config) -> Result<(), String> {
+pub fn copy_secret(secret: &SecretString, cfg: &Config) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         clipboard::copy_with_ttl(secret, cfg.clipboard_ttl)
@@ -144,5 +199,14 @@ mod tests {
         assert!(code.chars().all(|c| c.is_ascii_digit()));
         assert!(custom_field_names(&vpn).iter().any(|n| n == "API Key"));
         assert!(has_attachments(&vpn));
+    }
+
+    #[test]
+    fn default_path_uses_file_name_only() {
+        let p = default_save_path("/home/u/.bashrc");
+        assert!(p.ends_with(".bashrc") || p.ends_with("bashrc"));
+        assert!(!p.contains("/home/u/.bashrc"));
+        let p2 = default_save_path("../x");
+        assert!(p2.ends_with("x"));
     }
 }
