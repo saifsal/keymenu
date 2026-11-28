@@ -1,0 +1,65 @@
+[tools]
+rust = "1.100.0"
+
+[tasks.dev]
+description = "Build debug binary"
+run = "cargo build"
+
+[tasks.test]
+description = "Run unit, integration, and doctests"
+run = "cargo test"
+
+[tasks.fmt]
+description = "Check formatting"
+run = "cargo fmt --all --check"
+
+[tasks.clippy]
+description = "Lint with clippy (warnings denied)"
+run = "cargo clippy --all-targets --all-features -- -D warnings"
+
+[tasks.check]
+description = "Format, lint, and tests"
+depends = ["fmt", "clippy", "test"]
+run = "true"
+
+[tasks.build]
+description = "Build release binary"
+run = "cargo build --release"
+
+[tasks.clean]
+description = "Remove build artifacts"
+run = "cargo clean"
+
+# PREFIX/MANPREFIX/DESTDIR match suckless dwm (config.mk defaults).
+# Caller must be root (or already elevated); tasks do not elevate.
+[tasks.install]
+description = "Install binary + man1 to PREFIX (/usr/local); run as root"
+depends = ["build"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+PREFIX="${PREFIX:-/usr/local}"
+MANPREFIX="${MANPREFIX:-$PREFIX/share/man}"
+DESTDIR="${DESTDIR:-}"
+bin_dir="${DESTDIR}${PREFIX}/bin"
+man_dir="${DESTDIR}${MANPREFIX}/man1"
+
+mkdir -p "$bin_dir" "$man_dir"
+cp -f target/release/keymenu "$bin_dir/keymenu"
+chmod 755 "$bin_dir/keymenu"
+cp -f man/keymenu.1 "$man_dir/keymenu.1"
+chmod 644 "$man_dir/keymenu.1"
+"""
+
+[tasks.uninstall]
+description = "Remove binary + man1 from PREFIX (/usr/local); run as root"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+PREFIX="${PREFIX:-/usr/local}"
+MANPREFIX="${MANPREFIX:-$PREFIX/share/man}"
+DESTDIR="${DESTDIR:-}"
+
+rm -f "${DESTDIR}${PREFIX}/bin/keymenu" \
+	"${DESTDIR}${MANPREFIX}/man1/keymenu.1"
+"""
