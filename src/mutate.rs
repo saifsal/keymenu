@@ -47,8 +47,8 @@ impl FileSnapshot {
         } else {
             return Err(format!("database not found: {}", user_path.display()));
         };
-        let meta = fs::metadata(&resolved)
-            .map_err(|e| format!("stat {}: {e}", resolved.display()))?;
+        let meta =
+            fs::metadata(&resolved).map_err(|e| format!("stat {}: {e}", resolved.display()))?;
         Ok(FileSnapshot {
             user_path: user_path.to_path_buf(),
             resolved,
@@ -74,12 +74,8 @@ pub fn prepare_version_for_save(db: &mut Database, dmenu_bin: &str) -> Result<()
         DatabaseVersion::KDB4(_) => Ok(()),
         DatabaseVersion::KDB3(_) => {
             let choices = vec!["No".into(), "Yes".into()];
-            let confirm = dmenu::select(
-                dmenu_bin,
-                "Upgrade KDBX3 → KDBX4 on save?",
-                &choices,
-            )?
-            .ok_or_else(|| "upgrade cancelled".to_string())?;
+            let confirm = dmenu::select(dmenu_bin, "Upgrade KDBX3 → KDBX4 on save?", &choices)?
+                .ok_or_else(|| "upgrade cancelled".to_string())?;
             if confirm != "Yes" {
                 return Err("refusing to save without KDBX4 upgrade".into());
             }
@@ -160,15 +156,12 @@ fn write_atomic_bytes(
             .map_err(|e| format!("meta {}: {e}", tmp.display()))?
             .permissions();
         perms.set_mode(mode);
-        fs::set_permissions(&tmp, perms)
-            .map_err(|e| format!("chmod {}: {e}", tmp.display()))?;
+        fs::set_permissions(&tmp, perms).map_err(|e| format!("chmod {}: {e}", tmp.display()))?;
         let rc = unsafe { libc::fchown(file.as_raw_fd(), snapshot.uid, snapshot.gid) };
         if rc != 0 {
             // Non-fatal if we lack privilege to chown (e.g. not owner of group).
             let err = io::Error::last_os_error();
-            eprintln!(
-                "keymenu: warning: could not restore owner/group on temp file: {err}"
-            );
+            eprintln!("keymenu: warning: could not restore owner/group on temp file: {err}");
         }
 
         db.save(&mut file, key)
@@ -282,16 +275,13 @@ pub fn edit_entry(
         Some(v) => v,
     };
 
-    let new_password = match dmenu::prompt_password(
-        dmenu_bin,
-        password_mode,
-        "Password (empty=keep)",
-    )? {
-        Outcome::Cancelled => return Err("edit cancelled".into()),
-        Outcome::Empty => None,
-        Outcome::Value(v) if v.is_empty() => None,
-        Outcome::Value(v) => Some(SecretString::new(v)),
-    };
+    let new_password =
+        match dmenu::prompt_password(dmenu_bin, password_mode, "Password (empty=keep)")? {
+            Outcome::Cancelled => return Err("edit cancelled".into()),
+            Outcome::Empty => None,
+            Outcome::Value(v) if v.is_empty() => None,
+            Outcome::Value(v) => Some(SecretString::new(v)),
+        };
 
     {
         let mut e = db
@@ -510,29 +500,24 @@ esac
         )
         .expect("edit_entry");
 
-        let entry = db.entry(entry_id).unwrap();
-        assert_eq!(entry.get_title(), Some("Git"));
-        assert_eq!(entry.get_username(), Some("user@example.com"));
-        let hist_after = entry
-            .history
-            .as_ref()
-            .map(|h| h.get_entries().len())
-            .unwrap_or(0);
-        assert_eq!(hist_after, hist_before + 1);
-        drop(entry);
+        {
+            let entry = db.entry(entry_id).unwrap();
+            assert_eq!(entry.get_title(), Some("Git"));
+            assert_eq!(entry.get_username(), Some("user@example.com"));
+            let hist_after = entry
+                .history
+                .as_ref()
+                .map(|h| h.get_entries().len())
+                .unwrap_or(0);
+            assert_eq!(hist_after, hist_before + 1);
+        }
 
         // Refresh snapshot after edit saved.
         let snap2 = FileSnapshot::capture(&path).unwrap();
         let fake_del = write_fake_dmenu(&dir, "Yes\n");
         let uuid = entry_id.uuid();
-        delete_entry(
-            &mut db,
-            entry_id,
-            fake_del.to_str().unwrap(),
-            &snap2,
-            key,
-        )
-        .expect("delete_entry");
+        delete_entry(&mut db, entry_id, fake_del.to_str().unwrap(), &snap2, key)
+            .expect("delete_entry");
         assert!(db.deleted_objects.contains_key(&uuid));
         assert!(db.entry(entry_id).is_none());
     }

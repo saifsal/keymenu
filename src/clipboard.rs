@@ -7,10 +7,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use libc::{c_int, c_uchar};
-use zeroize::Zeroize;
 use x11::xlib::{
-    self, Atom, Display, Time, Window, XA_ATOM, XEvent, XSelectionEvent, XSelectionRequestEvent,
+    self, Atom, Display, Time, Window, XEvent, XSelectionEvent, XSelectionRequestEvent, XA_ATOM,
 };
+use zeroize::Zeroize;
 
 use crate::secret::SecretString;
 
@@ -107,7 +107,7 @@ unsafe fn copy_with_ttl_inner(bytes: &[u8], ttl: Duration) -> Result<(), String>
 unsafe fn server_time(display: *mut Display, window: Window) -> Result<Time, String> {
     xlib::XSelectInput(display, window, xlib::PropertyChangeMask);
     let atom = intern(display, "_KEYMENU_CLIPBOARD_TIME");
-    let mut zero: u8 = 0;
+    let zero: u8 = 0;
     xlib::XChangeProperty(
         display,
         window,
@@ -115,7 +115,7 @@ unsafe fn server_time(display: *mut Display, window: Window) -> Result<Time, Str
         atom,
         8,
         xlib::PropModeReplace,
-        &mut zero,
+        &zero,
         1,
     );
     xlib::XFlush(display);

@@ -32,11 +32,11 @@ fn harden_process() {
     #[cfg(target_os = "linux")]
     unsafe {
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
-        let mut lim = libc::rlimit {
+        let lim = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
         };
-        let _ = libc::setrlimit(libc::RLIMIT_CORE, &mut lim);
+        let _ = libc::setrlimit(libc::RLIMIT_CORE, &lim);
     }
 }
 
@@ -85,13 +85,7 @@ fn run() -> Result<(), String> {
         .ok_or_else(|| "no entry selected".to_string())?;
 
     if idx == 0 {
-        return mutate::add_entry(
-            &mut db,
-            &cfg.dmenu_bin,
-            &cfg.password_mode,
-            &snapshot,
-            key,
-        );
+        return mutate::add_entry(&mut db, &cfg.dmenu_bin, &cfg.password_mode, &snapshot, key);
     }
 
     let item = items
@@ -107,9 +101,6 @@ fn run() -> Result<(), String> {
     match after {
         AfterAction::Done => Ok(()),
         AfterAction::Clipboard(secret) => fields::copy_secret(&secret, &cfg),
-        AfterAction::Autotype {
-            username,
-            password,
-        } => action::run_autotype(&username, &password),
+        AfterAction::Autotype { username, password } => action::run_autotype(&username, &password),
     }
 }

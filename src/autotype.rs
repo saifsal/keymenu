@@ -39,9 +39,7 @@ impl Keymap for XKeymap {
         unsafe {
             let keycode = xlib::XKeysymToKeycode(self.display, keysym as c_ulong);
             if keycode == 0 {
-                return Err(
-                    "autotype: a character has no keycode on this keyboard layout".into(),
-                );
+                return Err("autotype: a character has no keycode on this keyboard layout".into());
             }
             let level0 = xlib::XKeycodeToKeysym(self.display, keycode, 0);
             let level1 = xlib::XKeycodeToKeysym(self.display, keycode, 1);
@@ -76,11 +74,9 @@ impl Keymap for XKeymap {
 /// keyboard level 0 or 1 (e.g. AltGr). Error strings never include secret bytes.
 pub fn plan_text_with(map: &dyn Keymap, text: &str) -> Result<Vec<KeyStroke>, String> {
     if text.bytes().any(|b| !(0x20..=0x7e).contains(&b)) {
-        return Err(
-            "autotype supports ASCII printable characters only; \
+        return Err("autotype supports ASCII printable characters only; \
              a character in the sequence is outside that range or unmappable"
-                .into(),
-        );
+            .into());
     }
     let mut out = Vec::with_capacity(text.len());
     for b in text.bytes() {
@@ -102,22 +98,18 @@ pub fn plan_username_tab_password_with(
         if username.bytes().any(|b| !(0x20..=0x7e).contains(&b))
             || password.bytes().any(|b| !(0x20..=0x7e).contains(&b))
         {
-            return Err(
-                "autotype supports ASCII printable characters only; \
+            return Err("autotype supports ASCII printable characters only; \
                  a character in the sequence is outside that range or unmappable"
-                    .into(),
-            );
+                .into());
         }
         for b in username.bytes() {
             plan.push(map.lookup(b as u64)?);
         }
         plan.push(map.lookup(XK_Tab as u64)?);
     } else if password.bytes().any(|b| !(0x20..=0x7e).contains(&b)) {
-        return Err(
-            "autotype supports ASCII printable characters only; \
+        return Err("autotype supports ASCII printable characters only; \
              a character in the sequence is outside that range or unmappable"
-                .into(),
-        );
+            .into());
     }
     for b in password.bytes() {
         plan.push(map.lookup(b as u64)?);
@@ -182,7 +174,10 @@ unsafe fn ensure_caps_lock_off(display: *mut Display) -> Result<(), String> {
 }
 
 /// Type username, Tab (if username non-empty), password into the focused window.
-pub fn username_tab_password(username: &SecretString, password: &SecretString) -> Result<(), String> {
+pub fn username_tab_password(
+    username: &SecretString,
+    password: &SecretString,
+) -> Result<(), String> {
     unsafe {
         let display = xlib::XOpenDisplay(ptr::null());
         if display.is_null() {
@@ -211,14 +206,14 @@ pub fn username_tab_password(username: &SecretString, password: &SecretString) -
         }
 
         let map = XKeymap { display };
-        let plan =
-            match plan_username_tab_password_with(&map, username.as_str(), password.as_str()) {
-                Ok(p) => p,
-                Err(e) => {
-                    xlib::XCloseDisplay(display);
-                    return Err(e);
-                }
-            };
+        let plan = match plan_username_tab_password_with(&map, username.as_str(), password.as_str())
+        {
+            Ok(p) => p,
+            Err(e) => {
+                xlib::XCloseDisplay(display);
+                return Err(e);
+            }
+        };
 
         thread::sleep(Duration::from_millis(250));
 

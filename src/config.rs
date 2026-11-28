@@ -182,10 +182,18 @@ mod tests {
         ])
         .unwrap()
         .unwrap();
-        assert_eq!(cfg.clipboard_ttl, Duration::from_secs(MAX_CLIPBOARD_TTL_SECS));
+        assert_eq!(
+            cfg.clipboard_ttl,
+            Duration::from_secs(MAX_CLIPBOARD_TTL_SECS)
+        );
 
-        let err = Config::from_args(&["--db".into(), "/tmp/x.kdbx".into(), "--ttl".into(), "abc".into()])
-            .unwrap_err();
+        let err = Config::from_args(&[
+            "--db".into(),
+            "/tmp/x.kdbx".into(),
+            "--ttl".into(),
+            "abc".into(),
+        ])
+        .unwrap_err();
         assert!(err.contains("invalid TTL"));
     }
 
@@ -205,6 +213,8 @@ mod tests {
         assert!(cfg.allow_keyfile_only);
         assert_eq!(cfg.password_mode.flag.as_deref(), Some("-P"));
 
-        assert!(Config::from_args(&["--db".into(), "/tmp/x.kdbx".into(), "--nope".into()]).is_err());
+        assert!(
+            Config::from_args(&["--db".into(), "/tmp/x.kdbx".into(), "--nope".into()]).is_err()
+        );
     }
 }

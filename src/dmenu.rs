@@ -142,7 +142,11 @@ pub fn prompt(dmenu_bin: &str, prompt_text: &str, items: &[String]) -> Result<Ou
 }
 
 /// Convenience: map Cancelled/Empty → None, Value → Some.
-pub fn select(dmenu_bin: &str, prompt_text: &str, items: &[String]) -> Result<Option<String>, String> {
+pub fn select(
+    dmenu_bin: &str,
+    prompt_text: &str,
+    items: &[String],
+) -> Result<Option<String>, String> {
     match prompt(dmenu_bin, prompt_text, items)? {
         Outcome::Cancelled | Outcome::Empty => Ok(None),
         Outcome::Value(v) => Ok(Some(v)),
@@ -235,10 +239,16 @@ mod tests {
 
     #[test]
     fn detects_grouped_password_flag() {
-        assert!(usage_supports_password_flag("usage: dmenu [-bfiPv] [-l lines]"));
+        assert!(usage_supports_password_flag(
+            "usage: dmenu [-bfiPv] [-l lines]"
+        ));
         assert!(usage_supports_password_flag("usage: dmenu [-P] [-l lines]"));
-        assert!(usage_supports_password_flag("usage: dmenu [-bfiv] [-P] [-l lines]"));
-        assert!(!usage_supports_password_flag("usage: dmenu [-bfiv] [-l lines]"));
+        assert!(usage_supports_password_flag(
+            "usage: dmenu [-bfiv] [-P] [-l lines]"
+        ));
+        assert!(!usage_supports_password_flag(
+            "usage: dmenu [-bfiv] [-l lines]"
+        ));
         assert!(!usage_supports_password_flag("usage: dmenu [-bfiv]"));
     }
 }

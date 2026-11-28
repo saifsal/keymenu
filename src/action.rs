@@ -101,10 +101,7 @@ pub fn run_for_entry(
                 .ok_or_else(|| "selected entry no longer exists".to_string())?;
             let username = secret::owned(entry.get_username().unwrap_or(""));
             let password = secret::owned(entry.get_password().unwrap_or(""));
-            Ok(AfterAction::Autotype {
-                username,
-                password,
-            })
+            Ok(AfterAction::Autotype { username, password })
         }
         ACTION_PASSWORD => {
             let entry = db

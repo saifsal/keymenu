@@ -35,10 +35,7 @@ pub fn has_otp(entry: &EntryRef<'_>) -> bool {
 /// Current TOTP code as a zeroizing string.
 pub fn otp_code(entry: &EntryRef<'_>) -> Result<SecretString, String> {
     let totp = entry.get_otp().map_err(|e| format!("OTP: {e}"))?;
-    let code = totp
-        .value_now()
-        .map_err(|e| format!("OTP time: {e}"))?
-        .code;
+    let code = totp.value_now().map_err(|e| format!("OTP time: {e}"))?.code;
     Ok(SecretString::new(code))
 }
 
@@ -50,7 +47,7 @@ pub fn custom_field_names(entry: &EntryRef<'_>) -> Vec<String> {
         .filter(|k| !STANDARD_SKIP.iter().any(|s| s.eq_ignore_ascii_case(k)))
         .cloned()
         .collect();
-    names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    names.sort_by_key(|a| a.to_lowercase());
     names
 }
 
@@ -150,7 +147,10 @@ pub fn write_attachment_file(path: &Path, data: &[u8], dmenu_bin: &str) -> Resul
             .open(&tmp)
             .map_err(|e| format!("create {}: {e}", tmp.display()))?;
         // Defeat umask narrowing.
-        let mut perms = file.metadata().map_err(|e| format!("meta: {e}"))?.permissions();
+        let mut perms = file
+            .metadata()
+            .map_err(|e| format!("meta: {e}"))?
+            .permissions();
         perms.set_mode(0o600);
         fs::set_permissions(&tmp, perms).map_err(|e| format!("chmod {}: {e}", tmp.display()))?;
 
@@ -161,9 +161,8 @@ pub fn write_attachment_file(path: &Path, data: &[u8], dmenu_bin: &str) -> Resul
         drop(file);
 
         // rename replaces a symlink at `path` rather than writing through it.
-        fs::rename(&tmp, path).map_err(|e| {
-            format!("rename {} → {}: {e}", tmp.display(), path.display())
-        })?;
+        fs::rename(&tmp, path)
+            .map_err(|e| format!("rename {} → {}: {e}", tmp.display(), path.display()))?;
         Ok(())
     })();
 
@@ -267,7 +266,10 @@ mod tests {
         // Symlink replaced by a regular 0600 file; target untouched.
         assert!(!link.symlink_metadata().unwrap().file_type().is_symlink());
         assert_eq!(fs::read(&link).unwrap(), b"new-secret");
-        assert_eq!(fs::metadata(&link).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&link).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         assert_eq!(fs::read(&real).unwrap(), b"old-secret");
     }
 }

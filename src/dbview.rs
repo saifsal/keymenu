@@ -67,7 +67,7 @@ pub fn flat_entries(db: &Database) -> Vec<EntryItem> {
         })
         .collect();
 
-    items.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+    items.sort_by_key(|a| a.label.to_lowercase());
     items
 }
 
@@ -92,27 +92,21 @@ fn entry_path_label(entry: &EntryRef<'_>) -> String {
     let mut parts: Vec<String> = Vec::new();
     let mut current_id = entry.parent().id();
 
-    loop {
-        let Some(g) = db.group(current_id) else {
-            break;
-        };
+    while let Some(g) = db.group(current_id) {
         let name = g.name.clone();
         let parent_id = g.parent().map(|p| p.id());
-        if parent_id.is_none() {
+        let Some(id) = parent_id else {
             let n = name.trim();
             if !n.is_empty() && !n.eq_ignore_ascii_case("root") {
                 parts.push(n.to_string());
             }
             break;
-        }
+        };
         let n = name.trim();
         if !n.is_empty() {
             parts.push(n.to_string());
         }
-        match parent_id {
-            Some(id) => current_id = id,
-            None => break,
-        }
+        current_id = id;
     }
 
     parts.reverse();
