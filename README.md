@@ -4,12 +4,23 @@ Suckless-inspired Rust `passmenu` alternative: native KDBX unlock via dmenu, lib
 
 ## Build
 
+Rust is pinned with [mise](https://mise.jdx.dev/) (`mise.toml`). System libs: **libX11**, **libXtst**, **pkg-config**, and **dmenu** on `PATH`.
+
 ```bash
+# Arch
+pacman -S --needed libx11 libxtst pkgconf dmenu
+
 # Debian/Ubuntu
 sudo apt install libx11-dev libxtst-dev pkg-config dmenu
 
-cargo build --release
+mise trust
+mise install
+mise run build   # → target/release/keymenu
 ```
+
+`mise run test` / `mise run check` run tests (and fmt + clippy).
+
+`mise run install` builds the release binary and installs it to `/usr/local/bin` plus `man/keymenu.1` to `/usr/local/share/man/man1` (dwm-style `PREFIX` / `MANPREFIX`; override with e.g. `PREFIX=/usr mise run install`). Run as root (or `sudo mise run install`); the task does not elevate. `mise run uninstall` removes both the same way.
 
 The binary dynamically links **system** `libX11` and `libXtst` (via pkg-config). Rust `std` stays statically linked — do **not** pass `-C prefer-dynamic` for normal installs.
 
